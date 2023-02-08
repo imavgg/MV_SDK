@@ -12,7 +12,7 @@ $ imu_app &
 $ rosrun ros_mv119 mvVISLAM
 ```
 
-##sample output:
+## sample output:
 ```
 63] Running (total: 0)...
 mvTrackingPose: HIGH_QUALITY
