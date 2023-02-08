@@ -1,0 +1,50 @@
+# PLease edit the SDK_ROOT macro below to point to the directory where
+# you installed the SDK
+# For example:
+SDK_ROOT = /prj/atlanticus/releases/ecosystem/intrinsyc3.1.2/qrlSDK/dst/
+
+CXX	:= $(SDK_ROOT)/gcc-linaro-arm-linux-gnueabihf-4.8-2013.08_linux/bin/arm-linux-gnueabihf-g++
+
+SYSROOT = $(SDK_ROOT)/sysroots/eagle8074
+INCLUDES  = -isystem ./
+INCLUDES += -isystem ../../inc
+INCLUDES += -isystem ../mvGateway/platform
+
+CXX_FLAGS  =  -std=c++11 -mthumb -fdata-sections -Wa,--noexecstack -fsigned-char
+CXX_FLAGS += -Wno-psabi -Wall -Wextra -Wno-unused-function -include limits.h
+CXX_FLAGS += -Wno-unused-local-typedefs -O3
+CXX_FLAGS += --sysroot=$(SYSROOT)
+CXX_FLAGS += -DISA_8x74_v7a
+
+
+
+LIB_INCLUDES  += -L $(SYSROOT)/lib
+LIB_INCLUDES  += -L $(SYSROOT)/usr/lib
+
+LIB_INCLUDES += -L ../../lib/lin/8x74-v7a
+
+LIB_INCLUDES  += -Wl,-rpath=$(SYSROOT)/lib,-rpath=$(SYSROOT)/usr/lib
+
+LIBS = -lmv1 -lpthread -lrt -lm -lssl -lcrypto 
+LIBS += -lsensor_imu -lcamera -ladsprpc -lcamparams -lz -lEGL_adreno -lGLESv2_adreno -lOpenCL
+
+
+SOURCE  = main.cpp
+SOURCE += ../mvGateway/platform/EagleCamera.cpp
+SOURCE += ../mvGateway/platform/EagleImu.cpp
+
+OBJ_FILES = $(SOURCE:.cpp=.o) 
+
+%.o: %.cpp
+	$(CXX) $(CXX_FLAGS) $(INCLUDES) -c -o $@ $<
+
+all: mvVISLAM
+
+mvVISLAM: $(OBJ_FILES)
+	$(CXX) $(CXX_FLAGS) -o $@ $^ $(LIB_INCLUDES) $(LIBS) 
+
+.PHONY: clean
+
+clean:
+	rm -f $(OBJ_FILES) mvVISLAM
+

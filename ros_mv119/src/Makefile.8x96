@@ -1,0 +1,47 @@
+# PLease edit the SDK_ROOT macro below to point to the directory where
+# you installed the SDK
+# For example: 
+# 
+SDK_ROOT = /prj/atlanticus/releases/sprint/platform8x96_LE.UM/ATL_PLATFORM_SPRINT_111_RELEASE/cross-compile-toolchain
+
+CXX	:= $(SDK_ROOT)/x86_64-linux/usr/bin/arm-oemllib32-linux-gnueabi/arm-oemllib32-linux-gnueabi-g++
+
+SYSROOT = $(SDK_ROOT)/lib32-apq8096
+
+INCLUDES  = -isystem ./
+INCLUDES += -isystem ../../inc
+INCLUDES += -isystem ../mvGateway/platform
+
+CXX_FLAGS  =  -std=c++11 -march=armv7-a -marm -mthumb-interwork -mfloat-abi=softfp -mfpu=neon
+CXX_FLAGS  +=  -fsigned-char -ffunction-sections -fdata-sections -fno-merge-constants
+CXX_FLAGS  +=  -Wa,--noexecstack -Wl,--exclude-libs,ALL -Wl,--gc-sections
+CXX_FLAGS  += -Wno-psabi -Wall -Wextra -Wno-unused-function -include limits.h
+CXX_FLAGS  += -Wno-unused-local-typedefs -O3
+CXX_FLAGS  += --sysroot=$(SYSROOT)
+
+LIB_INCLUDES += -L $(SYSROOT)/usr/lib/hw
+LIB_INCLUDES += -L ../../lib/lin/8x96-v7a
+
+LIBS = -lmv1 -lpthread -lrt -lm -lssl -lcrypto 
+LIBS += -ldl -lz -lOpenCL 
+LIBS += -lsensor_imu -lcamera 
+
+SOURCE  = main.cpp
+SOURCE += ../mvGateway/platform/EagleCamera.cpp
+SOURCE += ../mvGateway/platform/EagleImu.cpp
+
+OBJ_FILES = $(SOURCE:.cpp=.o) 
+
+%.o: %.cpp
+	$(CXX) $(CXX_FLAGS) $(INCLUDES) -c -o $@ $<
+
+all: mvVISLAM
+
+mvVISLAM: $(OBJ_FILES)
+	$(CXX) $(CXX_FLAGS) -o $@ $^ $(LIB_INCLUDES) $(LIBS) 
+
+.PHONY: clean
+
+clean:
+	rm -f $(OBJ_FILES) mvVISLAM
+
