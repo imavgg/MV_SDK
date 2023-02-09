@@ -11,8 +11,11 @@ It can change the camera type downward camera(optic-flow) use in this examples.
 ## new feature:
 * mvVISLAM point cloud to rviz(ros)
 * add pose trajectory [todo]
-* calibrate and rotate frame [todo]
+* calibrate vislam frmae and rotate frame [todo] !!!
 * change to camera imx377 [todo].
+* save map [todo] !!!!
+* import urdf [todo]
+
 
 
 ## RUN
