@@ -4,6 +4,8 @@
    Confidential & Proprietary.
 *******************************************************************************/
 
+#ifndef __MV_VISLAM_DEMODATA__
+#define  __MV_VISLAM_DEMODATA__
 // Structure for VISLAM sensor (accelerometer/gyro) data
 struct mvVISLAM_SensorData
 {
@@ -27,3 +29,7 @@ const mvVISLAM_SensorData MVSampleApp1_mvVISLAM_GyroData[] = {
 // Sample image data
 const unsigned int ImageFrameLength = 460840;
 //Using fake image data for now
+
+#endif   //__MV_VISLAM_DEMODATA__
+
+

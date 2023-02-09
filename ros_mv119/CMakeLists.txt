@@ -89,8 +89,3 @@ target_include_directories( mvVISLAM PRIVATE
 
 
 set(CMAKE_EXE_LINKER_FLAGS "-Wl,-gc-sections -Wl,-rpath-link,${CMAKE_SYSROOT}/linaro-rootfs/lib/arm-linux-gnueabihf -Wl,-rpath-link,${CMAKE_SYSROOT}/linaro-rootfs/usr/lib/arm-linux-gnueabihf")
-
-#############
-## Install ##
-#############
-
