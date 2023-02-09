@@ -3,14 +3,16 @@
 ## Requirement
 * SW: mv sdk v:1.1.9
 * HW: Atlflight pro
-* Build on flight pro docker with hexagon SDk and run on Atlflight pro: It use downward camera(red one)
+* Build on flight pro docker with hexagon SDk and run on Atlflight pro: 
+It can change the camera type downward camera(optic-flow) use in this examples.
+
 ![image](https://user-images.githubusercontent.com/24602331/217890177-8d336d0f-db9a-4b66-8629-d869cd065265.png)
 
 ## new feature:
 * mvVISLAM point cloud to rviz(ros)
 * add pose trajectory [todo]
 * calibrate and rotate frame [todo]
-* check camera parameters.
+* change to camera imx377 [todo].
 
 
 ## RUN
