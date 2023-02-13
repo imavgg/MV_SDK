@@ -36,7 +36,12 @@
 #include <tf2_ros/buffer.h>
 // #include <pcl_ros/point_cloud.h>
 #include <sensor_msgs/PointCloud.h>
+#include <sensor_msgs/PointCloud2.h>
+#include <sensor_msgs/point_cloud_conversion.h>
 #include <sensor_msgs/ChannelFloat32.h>
+#include <sensor_msgs/Image.h>
+#include <sensor_msgs/image_encodings.h>
+#include <sensor_msgs/fill_image.h>
 
 #define CHECK_BIT(var,pos) ((var) & (1<<(pos)))
 
@@ -73,7 +78,7 @@ const int gVGAFrameNBytes = 307200;
 MemoryPool gMemoryPool;
 APP_MODE gApplicationMode = VIO_ONLY;
 
-const int           gMaxPoints = 200;
+const int           gMaxPoints = 500; //200
 mvVISLAMMapPoint    gPointCloud[gMaxPoints];
 
 // Maintains total distance travelled by VIO since last reset
@@ -90,7 +95,8 @@ mvCPA*      cpa = NULL;
 bool        useCpa = false;
 uint32_t    cpaFilterSize = 1;
 
-char gRecordDirectory[100];
+// char gRecordDirectory[100];
+char gRecordDirectory[250];
 
 float eagleExposureTime = 0.2f;
 float eagleGain = 0.6f;
@@ -102,8 +108,9 @@ int cpaUpdateRate = 1;
 int gDelayVIOStart = 0;
 int nIterationsForCPABeforeVISLAMInit = 0;
 
-
-ros::Publisher   pub_vislam_pose_, pub_vislam_odometry_, pub_vislam_pc_,pub_vislam_pcl_;
+sensor_msgs::Image ros_image;
+sensor_msgs::Imu imu_msg;
+ros::Publisher   pub_vislam_pose_, pub_vislam_odometry_, pub_vislam_pc_,pub_vislam_pc2_, pub_vislam_pcl_, pub_cam_, imu_pub_;
 // -----------------------------------------------------------------------------
 //     Create a string from an MV_TRACKING_STATE
 //-------------------------------------------------------------------------------
@@ -196,10 +203,19 @@ void accelCallback( float valX, float valY, float valZ, int64_t timestamp )
                          valX,
                          valY,
                          valZ );
-
+   //Pass Accelerometer data to the SequenceWriter object. 
    if( gApplicationMode != VIO_ONLY )
       mvSRW_Writer_AddAccel( gWriter, timestamp, valX, valY, valZ );
 
+
+
+   // imu publish to ros
+
+   imu_msg.linear_acceleration.x = valX;
+   imu_msg.linear_acceleration.y = valY;
+   imu_msg.linear_acceleration.z = valZ;
+   imu_msg.header.frame_id = "vislam_imu";
+   imu_msg.header.stamp = ros::Time (timestamp);
 }
 
 // -----------------------------------------------------------------------------
@@ -219,8 +235,57 @@ void gyroCallback( float valX, float valY, float valZ, int64_t timestamp )
    if( gApplicationMode != VIO_ONLY )
       mvSRW_Writer_AddGyro( gWriter, timestamp, valX, valY, valZ );
 
+   imu_msg.angular_velocity.x = valX;
+   imu_msg.angular_velocity.y = valY;
+   imu_msg.angular_velocity.z = valZ;
+
+   imu_pub_.publish(imu_msg);
+
+
+
 }
 
+
+void camToros(sensor_msgs::Image  image, unsigned char *curFrameBuffer)
+{
+   image.encoding = std::string("mono8");
+   /*yuv_map_ == MONO*/
+   sensor_msgs::fillImage( image, 
+                           sensor_msgs::image_encodings::MONO8,
+                           cameraConfig.principalPoint[0],
+                           cameraConfig.principalPoint[1],
+                           cameraConfig.principalPoint[1],
+                           (uint8_t*)curFrameBuffer);
+
+   /* RAW FORMAT*/
+   /*  if(snap_cam_param_.camera_config.cam_format == Snapdragon::CameraFormat::RAW_FORMAT){
+            unsigned int image_size_bytes = snap_cam_param_.camera_config.pixel_height *
+               snap_cam_param_.camera_config.memory_stride;
+            image->data.resize(image_size_bytes);
+            for(unsigned int i=0; i*4 < image_size_bytes; ++i){
+               memcpy(&(image->data[i*4]),
+               reinterpret_cast<uint8_t*>(image_buffer)+i*5, 4);
+            }
+            image->encoding = std::string("mono8");
+            image->step = snap_cam_param_.camera_config.pixel_width;
+    */
+   // unsigned int image_size_bytes = cameraConfig.principalPoint[0] *  cameraConfig.principalPoint[1];
+   // image.data.resize(image_size_bytes);
+   // for(unsigned int i=0; i*4 < image_size_bytes; ++i)
+   // {
+   //    // copying data of size 4 bytes starting from the address reinterpret_cast<uint8_t*>(curFrameBuffer)+i*5 to another location
+   //    memcpy(&(image.data[i*4]), reinterpret_cast<uint8_t*>(curFrameBuffer)+i*5, 4);
+   //  }
+
+
+   image.step = cameraConfig.principalPoint[0];
+   image.is_bigendian = 0;
+   image.width = cameraConfig.principalPoint[0] ;
+   image.height = cameraConfig.principalPoint[1] ;
+   image.step = cameraConfig.principalPoint[0] ;
+   pub_cam_.publish(image);
+   
+}
 // -----------------------------------------------------------------------------
 // Called when a new camera frame is available
 // -----------------------------------------------------------------------------
@@ -234,6 +299,7 @@ void cameraCallback( int64_t timestamp, unsigned char *curFrameBuffer )
       memcpy( curFrame.buffer, curFrameBuffer, gVGAFrameNBytes );
 
    std::unique_lock<std::mutex> lck( gFrameBufferMtx );
+   // if buffer size full erase the former image frames
    if( gFrameBuffer.size() == gMaxFrameBufferSize )
    {
       printf( "reached frame buffer size of %d, removing old frame", gMaxFrameBufferSize );
@@ -250,6 +316,7 @@ void cameraCallback( int64_t timestamp, unsigned char *curFrameBuffer )
    /// we wait for 3 frames before computing and applying new cpa values.
    if( cpa && cpaframeId % 4 == 0 )
    {
+      printf("camera callback CPA\n");
       float32_t exposure = 0.0f, gain = 0.0f;
       /// In the starting we try to have CPA component converge to some parameter values thats more relevant to current scene than default values
       if( cpaframeId == 0 && nIterationsForCPABeforeVISLAMInit > 1 )
@@ -257,7 +324,7 @@ void cameraCallback( int64_t timestamp, unsigned char *curFrameBuffer )
          for( int i = 0; i < nIterationsForCPABeforeVISLAMInit - 1; ++i )
             mvCPA_AddFrame( cpa, (uint8_t*)curFrameBuffer, cameraConfig.memoryStride );
       }
-
+      //Add image to adjust exposure and gain parameters
       mvCPA_AddFrame( cpa, (uint8_t*)curFrameBuffer, cameraConfig.memoryStride );
       mvCPA_GetValues( cpa, &exposure, &gain );
       exposure *= exposureScale;
@@ -266,12 +333,17 @@ void cameraCallback( int64_t timestamp, unsigned char *curFrameBuffer )
       {
          eagleCamera->setExposureAndGain( exposure, gain );
          if( gApplicationMode != VIO_ONLY )
+         //Pass CameraSettings data to the SequenceWriter object. 
             mvSRW_Writer_AddCameraSettings( gWriter, timestamp, gain, exposure, 0 );
       }
    }
    cpaframeId++;
 
+   camToros(ros_image,curFrameBuffer);
+
 }
+
+
 
 //------------------------------------------------------------------------------
 //  Handler for trapping Ctrl+C
@@ -336,41 +408,6 @@ void shutdown()
       printf( "deinitialising CPA\n" );
       mvCPA_Deinitialize( cpa );
    }
-}
-
-//------------------------------------------------------------------------------
-//  Displays the usage help
-//------------------------------------------------------------------------------
-void printHelp()
-{
-   static const char* gHelp =
-      "USAGE: mvVISLAM [-t arg] [-d arg] [-m arg] [-g arg] [-e arg] [-E arg] [-G arg]"
-      "[-f arg] [-F arg] [-a] [-h] [-H]\n"
-      "-t "
-      "\t arg denotes how many seconds to run the app (default unlimited)\n"
-      "-d "
-      "\t arg denotes destination path for recording directory\n"
-      "-m "
-      "\t arg denotes which mode to run 0-vislam only , 1-capture only, 2-vislam and capture\n"
-      "-g "
-      "\t arg denotes gain value for non auto exposure mode valid values <0-1>\n"
-      "-e "
-      "\t arg denotes exposure value for non auto exposure mode valid values <0-1>\n"
-      "-E "
-      "\t arg denotes exposure value range/scale for auto exposure mode valid values <0-1>\n"
-      "-G "
-      "\t arg denotes gain value range/scale for auto exposure mode valid values <0-1>\n"
-      "-f "
-      "\t arg denotes auto exposure filter size default 10\n"
-      "-F "
-      "\t arg denotes update rate for auto exposure deault 1, every frame.\n"
-      "-a"
-      "\t enables auto exposure \n"
-      "-H"
-      "\t Print help information. \n"
-      "-h"
-      "\t Print help information.\n";
-   printf( "%s\n", gHelp );
 }
 
 //------------------------------------------------------------------------------
@@ -456,10 +493,10 @@ void parseCommandLine( int argc, char * argv[] )
             printf( "Setting CPA update rate : %d\n", cpaUpdateRate );
             break;
          case 'h':
-            printHelp();
+            // printHelp();
             exit( 1 );
          case 'H':
-            printHelp();
+            // printHelp();
             exit( 1 );
          case '?':
             if( optopt == 't' || optopt == 'm' || optopt == 'd' ||
@@ -468,7 +505,7 @@ void parseCommandLine( int argc, char * argv[] )
                printf( "option -%c requires an argument\n", optopt );
          default:
             printf( "unknown argument\n" );
-            printHelp();
+            // printHelp();
             exit( 1 );
       }
    }
@@ -491,7 +528,7 @@ void parseCommandLine( int argc, char * argv[] )
       {
          printf( "Error: Missing capture directory.\n" );
          printf( "Please provide a directory name for saving capture data\n" );
-         printHelp();
+         // printHelp();
          exit( 1 );
       }
    }
@@ -590,15 +627,28 @@ void PublishVislamData( mvVISLAMPose& vislamPose, std::vector<mvVISLAMMapPoint> 
   for (auto it = vio_points.cbegin(); it != vio_points.cend(); ++it) {
 
     geometry_msgs::Point32 cloud_pt;
+    /*id	Unique ID for map point.
+      tsf :3D location in spatial frame in meters.
+      p_tsf:	Error covariance for tsf.
+      depth:	Depth of map point from camera in meters.
+      depthErrorStdDev:	Depth error standard deviation in meters. */
+   // tsf:  	3D location in spatial frame in meters.
     cloud_pt.x = it->tsf[0];
     cloud_pt.y = it->tsf[1];
     cloud_pt.z = it->tsf[2];
     cloud_msg.points.push_back(cloud_pt);
 
+   //  printf("depth of point: %i = %i (m)\n", it->id,it->depth); 
+
     quality_channel.values.push_back(it->pointQuality);
   }
   
   pub_vislam_pc_.publish(cloud_msg);
+
+   sensor_msgs::PointCloud2 cloud2_msg;
+   sensor_msgs::convertPointCloudToPointCloud2 	(cloud_msg, cloud2_msg);
+
+   pub_vislam_pc2_.publish(cloud2_msg);
 
 
    // publish pcl::PointXYZRGB points : toDo (can use pcl function)
@@ -651,32 +701,28 @@ void VISLAMWorkerFunc( mvVISLAM * tracker )
          PoseToString( viPose.poseQuality, szResult, sizeof( szResult ) );
          printf( szResult );
 
-         printf( "%d, %0.4f, %s, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f\n",
+         // if point cloud is in good quality then push
+         if( viPose.poseQuality != MV_TRACKING_STATE_FAILED  && 
+          viPose.poseQuality != MV_TRACKING_STATE_INITIALIZING ) {
+
+
+            printf( "%d, %0.4f, %s, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f, %0.4f\n",
                  vioFrameId, viPose.timeAlignment, ErrorCodeToString( viPose.errorCode ).c_str(),
                  viPose.bodyPose.matrix[0][0], viPose.bodyPose.matrix[0][1], viPose.bodyPose.matrix[0][2], viPose.bodyPose.matrix[0][3],
                  viPose.bodyPose.matrix[1][0], viPose.bodyPose.matrix[1][1], viPose.bodyPose.matrix[1][2], viPose.bodyPose.matrix[1][3],
                  viPose.bodyPose.matrix[2][0], viPose.bodyPose.matrix[2][1], viPose.bodyPose.matrix[2][2], viPose.bodyPose.matrix[2][3],
                  viPose.velocity[0], viPose.velocity[1], viPose.velocity[2] );
 
-
-         if( viPose.poseQuality != MV_TRACKING_STATE_FAILED  && 
-          viPose.poseQuality != MV_TRACKING_STATE_INITIALIZING ) {
-
-
             int64_t timestamp_ns= viPose.timeAlignment;
             int64_t vislamFrameId = vioFrameId;
 
             //max number of points requrested.
             int num_points = mvVISLAM_HasUpdatedPointCloud(tracker);
-            // current map points(array structure)
+            // current map points of array structure
             std::vector<mvVISLAMMapPoint> map_points(num_points, {0});
-            // number of points
+            // get number of points and push to map_points, if there is new map points, then update and estimated.
             int num_received = mvVISLAM_GetPointCloud(tracker, map_points.data(), num_points);
-            // check if there is new map points, then update and estimated.
-
-
             // Publish Pose and cloud Data
-
             PublishVislamData( viPose, map_points, vislamFrameId, timestamp_ns );
             
 
@@ -687,8 +733,6 @@ void VISLAMWorkerFunc( mvVISLAM * tracker )
          vioFrameId++;
          gMemoryPool.releaseBlock( curFrame.buffer );
       }
-
-      printf( "VISLAMWorkerFunc thread terminated\n" );
    }
 
 }
@@ -706,8 +750,11 @@ int main( int argc, char* argv[] )
    ros::NodeHandle nh_;
    pub_vislam_pose_= nh_.advertise<geometry_msgs::PoseStamped>("vislam/pose",10);
    pub_vislam_odometry_=nh_.advertise<nav_msgs::Odometry>("vislam/odometry",10);
-   pub_vislam_pc_ = nh_.advertise<sensor_msgs::PointCloud>("vislam/pointcloud", 1000);
-   // pub_vislam_pcl_ = nh_.advertise<pcl::PointCloud<pcl::PointXYZRGB> > ("vislam/pcl", 1000);
+   // pub_vislam_pc_ = nh_.advertise<sensor_msgs::PointCloud>("vislam/pointcloud", 1000);
+   pub_vislam_pc2_ = nh_.advertise<sensor_msgs::PointCloud2>("vislam/pointcloud2", 1000);
+   pub_cam_ = nh_.advertise<sensor_msgs::Image>("/image", 10);
+   imu_pub_ = nh_.advertise<sensor_msgs::Imu>("vislam/imu", 10);
+
 
    if( argc > 1 )
    {
@@ -718,34 +765,38 @@ int main( int argc, char* argv[] )
    cameraConfig.pixelWidth = 640;
    cameraConfig.pixelHeight = 480;
 
+   // Set the camera configuration (IMX377 or ov7251)
    //#define IMX377
 
    #ifdef IMX377
+      printf("Use imx777 camera..............\n");
 
       // hires camera (IMX377)
-      cameraConfig.principalPoint[0] = 316.92;
-      cameraConfig.principalPoint[1] = 239.50;
+      // cameraConfig.principalPoint[0] = 316.92;
+      // cameraConfig.principalPoint[1] = 239.50;
 
-      cameraConfig.focalLength[0] = 197.209;
-      cameraConfig.focalLength[1] = 197.209;
+      // cameraConfig.focalLength[0] = 197.209;
+      // cameraConfig.focalLength[1] = 197.209;
 
-      cameraConfig.distortion[0] = 0.014323;
-      cameraConfig.distortion[1] = -0.021431;
-      cameraConfig.distortion[2] = 0.006077;
-      cameraConfig.distortion[3] = -0.000954;
-      cameraConfig.distortion[4] = 0;
-      cameraConfig.distortion[5] = 0;
-      cameraConfig.distortion[6] = 0;
-      cameraConfig.distortion[7] = 0;
-      cameraConfig.distortionModel = 10;
+      // cameraConfig.distortion[0] = 0.014323;
+      // cameraConfig.distortion[1] = -0.021431;
+      // cameraConfig.distortion[2] = 0.006077;
+      // cameraConfig.distortion[3] = -0.000954;
+      // cameraConfig.distortion[4] = 0;
+      // cameraConfig.distortion[5] = 0;
+      // cameraConfig.distortion[6] = 0;
+      // cameraConfig.distortion[7] = 0;
+      // cameraConfig.distortionModel = 10;
 
-      float32_t readoutTime = 0.0287;
+      // float32_t readoutTime = 0.0287;
 
       // <Stateinit delta = "0.0171" ombc="1.0183190171 -1.0116207625 -1.3099902568" tbc="-0.074 0.013 -0.012"   /> <!--RS camera IMX377 10 deg downtilt -->
 
    #else
 
       // tracking camera (OV 7251)
+      printf("Use OV 7251 camera..............\n");
+
       cameraConfig.principalPoint[0] = 320;
       cameraConfig.principalPoint[1] = 240;
 
@@ -765,17 +816,19 @@ int main( int argc, char* argv[] )
       float32_t readoutTime = 0;  // 0 for global shutter
    #endif
 
-
-      float32_t tbc[3];
-      float32_t ombc[3];
+      // Camera to IMU frame
+      float32_t tbc[3]; // position of the camera frame origin with respect to the IMU frame origin, written in the IMU coordinate frame, in meters.
+      float32_t ombc[3]; //orientation that transforms a vector in the camera frame to the IMU frame, converted to axis-angle representation (three components), in radians.
 
       //#define  DOWNTILTED_45_DEG
 
    #if not defined (ISA_8x74_v7a)
 
+      // Camera, IMU time misalignment 
       float32_t delta = 0.0026f;     // for Excelsior/8x96 for platform build 114 and higher (HAL3)
 
       #ifdef DOWNTILTED_45_DEG // 45 deg down tilted camera on Excelsior
+         printf("Use down 45 tilted camera..............\n");
 
          tbc[0] = -0.03071f;
          tbc[1] = 0.00341f;
@@ -786,44 +839,30 @@ int main( int argc, char* argv[] )
          ombc[2] = -1.48218f;
 
       #else // down facing camera on Excelsior
+         printf("Use downward camera..............\n");
 
-      tbc[0] = 0.005f; // tbc here needs to be verified
-      tbc[1] = 0.015f;
-      tbc[2] = 0.0f;
 
-      ombc[0] = 0.0f;
-      ombc[1] = 0.0f;
-      ombc[2] = -1.57f;
+         // tbc[0] = 0.005f; // tbc here needs to be verified: camera to body translation
+         // tbc[1] = 0.015f;
+         // tbc[2] = 0.0f;
 
-      #endif
-
-   #else
-
-      float32_t delta = -0.0068f;     // for Eagle/8x74 (after March 2016) and for Excelsior/8x96 for platform build 113 and lower (HAL1)
-
-      #ifdef DOWNTILTED_45_DEG // 45 deg down tilted camera on Eagle/8074
-
-         tbc[0] = 0.00046f;
-         tbc[1] = 0.01616f;
-         tbc[2] = 0.00949f;
+         // ombc[0] = 0.0f;
+         // ombc[1] = 0.0f;
+         // ombc[2] = -1.57f;
+         tbc[0] = -0.03071f;
+         tbc[1] = 0.00341f;
+         tbc[2] = 0.00802f;
 
          ombc[0] = 0.61394f;
-         ombc[1] = 0.61394f;
-         ombc[2] = 1.48218f;
-
-      #else // down facing camera on Eagle/8074
-
-         tbc[0] = 0.005f;
-         tbc[1] = 0.0150f;
-         tbc[2] = 0.0f;
-
-         ombc[0] = 0.0f;
-         ombc[1] = 0.0f;
-         ombc[2] = 1.57f;
+         ombc[1] = -0.61394f;
+         ombc[2] = -1.48218f;
 
       #endif
 
    #endif
+
+      printf("tbc, ombc= [%f %f %f],[%f %f %f] \n", tbc[0],tbc[1],tbc[2],ombc[0],ombc[1],ombc[2]);
+      //Default values
 
       float32_t std0Delta = 0.001f;   // firmware/driver upgrades may affect the time alignment
 
@@ -837,7 +876,7 @@ int main( int argc, char* argv[] )
       std0Ombc[1] = 0.04f;
       std0Ombc[2] = 0.04f;
 
-      float32_t accelMeasRange = 156.f;
+      float32_t accelMeasRange = 156.f;//
       float32_t gyroMeasRange = 34.f;
 
       float32_t stdAccelMeasNoise = 0.316227766016838f; // sqrt(1e-1);
@@ -849,9 +888,11 @@ int main( int argc, char* argv[] )
 
       float32_t logDepthBootstrap = 0.f;
       bool useLogCameraHeight = false;
-      float32_t logCameraHeightBootstrap = -3.22f;
+      float32_t logCameraHeightBootstrap = -3.22f; //Downard 
+      // allows to enable or disable initialization when moving. T
+      bool noInitWhenMoving = true; // need static
+      // bool noInitWhenMoving = false;
 
-      bool noInitWhenMoving = true;
 
       float32_t limitedIMUbWtrigger = 35.f;
 
@@ -871,7 +912,8 @@ int main( int argc, char* argv[] )
       BlurCameraParams eagleCameraParams;
 
       BlurCameraParams::OutputFormatType defaultCameraOutFormat = BlurCameraParams::RAW_FORMAT; // was NV12_FORMAT but on 8096, cannot set gain and exposure time
-      //BlurCameraParams::OutputFormatType defaultCameraOutFormat = BlurCameraParams::NV12_FORMAT; // IMX377
+      // BlurCameraParams::OutputFormatType defaultCameraOutFormat = BlurCameraParams::NV12_FORMAT; // IMX377
+
       cameraConfig.memoryStride = (defaultCameraOutFormat == BlurCameraParams::RAW_FORMAT) ?
          (cameraConfig.pixelWidth / 4) * 5 : cameraConfig.pixelWidth;
       float defaultFrameRate = 30.f;
@@ -880,13 +922,16 @@ int main( int argc, char* argv[] )
       eagleCameraParams.pSize[1] = cameraConfig.pixelHeight;
       eagleCameraParams.frameRate = defaultFrameRate;
       eagleCameraParams.captureMode = BlurCameraParams::PREVIEW;
+
       eagleCameraParams.func = BlurCameraParams::CAM_FUNC_OPTIC_FLOW; // downward facing or 45 deg tilted
-      //eagleCameraParams.func = BlurCameraParams::CAM_FUNC_HIRES; // IMX377
+      // eagleCameraParams.func = BlurCameraParams::CAM_FUNC_HIRES; // IMX377
       //eagleCameraParams.func = BlurCameraParams::CAM_FUNC_LEFT_SENSOR; // forward facing (or 45 deg tilted)
+
       eagleCameraParams.exposure = eagleExposureTime;
       eagleCameraParams.gain = eagleGain;
       eagleCameraParams.outputFormat = defaultCameraOutFormat;
       eagleCamera->setCaptureParams( eagleCameraParams );
+      
       if( useCpa )
       {
          printf( "CPA Initializing with %f exposure, %f gain\n", eagleCameraParams.exposure, eagleCameraParams.gain );
@@ -895,6 +940,11 @@ int main( int argc, char* argv[] )
          cpaConfig.width = cameraConfig.pixelWidth;
          cpaConfig.height = cameraConfig.pixelHeight;
          cpaConfig.format = (defaultCameraOutFormat == BlurCameraParams::RAW_FORMAT) ? MVCPA_FORMAT_RAW10 : MVCPA_FORMAT_GRAY8;
+
+         //  MVCPA_FORMAT_GRAY8: 8-bit grayscale format.
+         //  MVCPA_FORMAT_RAW10: Android 10-bit raw format.
+         //  MVCPA_FORMAT_RAW12: Android 12-bit raw format.
+
          //DK: Change cpaType to 1 if you want new approach
          cpaConfig.cpaType = MVCPA_MODE_COST;
          cpaConfig.legacyCost.startExposure = eagleCameraParams.exposure;
@@ -931,64 +981,6 @@ int main( int argc, char* argv[] )
                                           &cameraConfig );
       }
 
-      // MV: Initialize the mvVISLAM tracker
-      // gVISLAMTracker = mvVISLAM_Initialize(
-      //    &cameraConfig, readoutTime,
-      //    tbc, ombc, delta,
-      //    std0Tbc, std0Ombc, std0Delta,
-      //    accelMeasRange, gyroMeasRange,
-      //    stdAccelMeasNoise, stdGyroMeasNoise,
-      //    stdCamNoise, minStdPixelNoise, failHighPixelNoiseScaleFactor,
-      //    logDepthBootstrap, useLogCameraHeight, logCameraHeightBootstrap,
-      //    noInitWhenMoving, limitedIMUbWtrigger,
-      //    staticMaskFileName.c_str(),
-      //    gpsImuTimeAlignment, tba,
-      //    mapping);
-
-      // if( gVISLAMTracker == NULL )
-      // {
-      //    printf( "Error initializing VISLAM\n" );
-      //    return -1;
-      // }
-
-      // if( !eagleCamera->init() )
-      // {
-      //    printf( "Error in camera.init()!\n" );
-      //    return -1;
-      // }
-      // eagleCamera->addCallback( cameraCallback );
-      // printf( "Starting Sensors!\n" );
-      // eagleImu = new EagleImu();
-      // eagleImu->init();
-      // eagleImu->addAccelCallback( accelCallback );
-      // eagleImu->addGyroCallback( gyroCallback );
-
-      // if( !eagleImu->start() )
-      // {
-      //    printf( "Error in sensor start!\n" );
-      //    return -1;
-      // }
-
-      // printf( "Starting Camera!\n" );
-      // if( !eagleCamera->start() )
-      // {
-      //    printf( "Error in camera start!\n" );
-      //    return -1;
-      // }
-
-      // struct sigaction sigIntHandler;
-      // sigIntHandler.sa_handler = sigIntFunc;
-      // sigemptyset( &sigIntHandler.sa_mask );
-      // sigIntHandler.sa_flags = 0;
-      // sigaction( SIGINT, &sigIntHandler, NULL );
-      // // Wait until the worker thread is done
-      // std::thread workerThread( VISLAMWorkerFunc, gVISLAMTracker );
-
-      // workerThread.join();
-
-
-      // //Run until shutdown is reuested
-      // printf( "Running mvVISLAM application. Press Ctrl+C to stop\n" );
 
     // MV: Initialize the mvVISLAM tracker
          gVISLAMTracker = mvVISLAM_Initialize(
@@ -1013,11 +1005,10 @@ int main( int argc, char* argv[] )
          if( !eagleCamera->init() )
          {
             printf( "Error in camera.init()!\n" );
-            return -1;
          }
+         eagleCamera->addCallback( cameraCallback );
          
          std::thread workerThread( VISLAMWorkerFunc, gVISLAMTracker );
-                  eagleCamera->addCallback( cameraCallback );
          printf( "Starting Sensors!\n" );
          eagleImu = new EagleImu();
          eagleImu->init();
@@ -1043,12 +1034,7 @@ int main( int argc, char* argv[] )
          sigIntHandler.sa_flags = 0;
          sigaction( SIGINT, &sigIntHandler, NULL );
 
-         // Wait until the worker thread is done
-         // std::thread workerThread( VISLAMWorkerFunc, gVISLAMTracker );
-
-         // workerThread.join();
-
-
+        
          //Run until shutdown is reuested
          printf( "Running mvVISLAM application. Press Ctrl+C to stop\n" );
 
@@ -1057,69 +1043,6 @@ int main( int argc, char* argv[] )
 
       while (nh_.ok()) {
          printf("start ROS\n");
-         
-
-         // // MV: Initialize the mvVISLAM tracker
-         // gVISLAMTracker = mvVISLAM_Initialize(
-         //    &cameraConfig, readoutTime,
-         //    tbc, ombc, delta,
-         //    std0Tbc, std0Ombc, std0Delta,
-         //    accelMeasRange, gyroMeasRange,
-         //    stdAccelMeasNoise, stdGyroMeasNoise,
-         //    stdCamNoise, minStdPixelNoise, failHighPixelNoiseScaleFactor,
-         //    logDepthBootstrap, useLogCameraHeight, logCameraHeightBootstrap,
-         //    noInitWhenMoving, limitedIMUbWtrigger,
-         //    staticMaskFileName.c_str(),
-         //    gpsImuTimeAlignment, tba,
-         //    mapping);
-
-         // if( gVISLAMTracker == NULL )
-         // {
-         //    printf( "Error initializing VISLAM\n" );
-         //    return -1;
-         // }
-
-         // if( !eagleCamera->init() )
-         // {
-         //    printf( "Error in camera.init()!\n" );
-         //    return -1;
-         // }
-         
-         // std::thread workerThread( VISLAMWorkerFunc, gVISLAMTracker );
-         // eagleCamera->addCallback( cameraCallback );
-         // printf( "Starting Sensors!\n" );
-         // eagleImu = new EagleImu();
-         // eagleImu->init();
-         // eagleImu->addAccelCallback( accelCallback );
-         // eagleImu->addGyroCallback( gyroCallback );
-
-         // if( !eagleImu->start() )
-         // {
-         //    printf( "Error in sensor start!\n" );
-         //    return -1;
-         // }
-
-         // printf( "Starting Camera!\n" );
-         // if( !eagleCamera->start() )
-         // {
-         //    printf( "Error in camera start!\n" );
-         //    return -1;
-         // }
-
-         // struct sigaction sigIntHandler;
-         // sigIntHandler.sa_handler = sigIntFunc;
-         // sigemptyset( &sigIntHandler.sa_mask );
-         // sigIntHandler.sa_flags = 0;
-         // sigaction( SIGINT, &sigIntHandler, NULL );
-
-         // // Wait until the worker thread is done
-         // // std::thread workerThread( VISLAMWorkerFunc, gVISLAMTracker );
-
-         // // workerThread.join();
-
-
-         // //Run until shutdown is reuested
-         // printf( "Running mvVISLAM application. Press Ctrl+C to stop\n" );
 
          shutdownApp = false;
          int elapsedSeconds = 0;
