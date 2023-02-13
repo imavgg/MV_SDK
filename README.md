@@ -21,7 +21,7 @@ It can change the camera type downward camera(optic-flow) use in this examples.
 ## RUN
 ```
 $ stop snav
-$ imu_app &
+$ imu_app -s2 -p 10 -f &
 $ rosrun ros_mv119 mvVISLAM
 ```
 
